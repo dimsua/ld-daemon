@@ -3,36 +3,47 @@ package ldclient
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"io"
 	"reflect"
 	"strconv"
 )
 
+const (
+	long_scale = float32(0xFFFFFFFFFFFFFFF)
+)
+
 type FeatureFlag struct {
-	Key          string        `json:"key" bson:"key"`
-	Version      int           `json:"version" bson:"version"`
-	On           bool          `json:"on" bson:"on"`
-	Salt         string        `json:"salt" bson:"salt"`
-	Sel          string        `json:"sel" bson:"sel"`
-	Targets      []Target      `json:"targets" bson:"targets"`
-	Rules        []Rule        `json:"rules" bson:"rules"`
-	Fallthrough  Rule          `json:"fallthrough" bson:"fallthrough"`
-	OffVariation *int          `json:"offVariation" bson:"offVariation"`
-	Variations   []interface{} `json:"variations" bson:"variations"`
+	Key           string             `json:"key" bson:"key"`
+	Version       int                `json:"version" bson:"version"`
+	On            bool               `json:"on" bson:"on"`
+	Prerequisites []Prerequisite     `json:"prerequisites" bson:"prerequisites"`
+	Salt          string             `json:"salt" bson:"salt"`
+	Sel           string             `json:"sel" bson:"sel"`
+	Targets       []Target           `json:"targets" bson:"targets"`
+	Rules         []Rule             `json:"rules" bson:"rules"`
+	Fallthrough   VariationOrRollout `json:"fallthrough" bson:"fallthrough"`
+	OffVariation  *int               `json:"offVariation" bson:"offVariation"`
+	Variations    []interface{}      `json:"variations" bson:"variations"`
+	Deleted       bool               `json:"deleted" bson:"deleted"`
 }
 
-// Expresses a set of AND-ed matching conditions for a user, along with
-// either the fixed variation or percent rollout to serve if the conditions
-// match.
-// Invariant: one of the variation or rollout must be non-nil.
+// Expresses a set of AND-ed matching conditions for a user, along with either a fixed
+// variation or a set of rollout percentages
 type Rule struct {
-	Clauses   []Clause `json:"clauses,omitempty" bson:"clauses,omitempty"`
+	VariationOrRollout `bson:",inline"`
+	Clauses            []Clause `json:"clauses" bson:"clauses"`
+}
+
+// Contains either the fixed variation or percent rollout to serve.
+// Invariant: one of the variation or rollout must be non-nil.
+type VariationOrRollout struct {
 	Variation *int     `json:"variation,omitempty" bson:"variation,omitempty"`
 	Rollout   *Rollout `json:"rollout,omitempty" bson:"rollout,omitempty"`
 }
 
 type Rollout struct {
-	Variations []WeightedVariation `json:"variations,omitempty" bson:"variations"`
+	Variations []WeightedVariation `json:"variations" bson:"variations"`
 	BucketBy   *string             `json:"bucketBy,omitempty" bson:"bucketBy,omitempty"`
 }
 
@@ -53,15 +64,21 @@ type Target struct {
 	Variation int      `json:"variation" bson:"variation"`
 }
 
-// An explanation is either a target or a rule
+// An explanation is one of: target, rule, prerequisite that wasn't met, or fallthrough rollout/variation
 type Explanation struct {
-	Kind string `json:"kind" bson:"kind"`
-	*Target
-	*Rule
+	Kind                string `json:"kind" bson:"kind"`
+	*Target             `json:"target,omitempty"`
+	*Rule               `json:"rule,omitempty"`
+	*Prerequisite       `json:"prerequisite,omitempty"`
+	*VariationOrRollout `json:"fallthrough,omitempty"`
+}
+
+type Prerequisite struct {
+	Key       string `json:"key"`
+	Variation int    `json:"variation"`
 }
 
 func bucketUser(user User, key, attr, salt string) float32 {
-
 	uValue, pass := user.valueOf(attr)
 
 	if idHash, ok := uValue.(string); pass || !ok {
@@ -83,24 +100,79 @@ func bucketUser(user User, key, attr, salt string) float32 {
 	}
 }
 
-func (f FeatureFlag) EvaluateExplain(user User) (interface{}, *Explanation) {
-	index, explanation := f.evaluateExplainIndex(user)
+type EvalResult struct {
+	Value                     interface{}
+	Explanation               *Explanation
+	PrerequisiteRequestEvents []FeatureRequestEvent //to be sent to LD
+}
 
-	if index == nil || *index >= len(f.Variations) {
-		return nil, explanation
-	} else {
-		return f.Variations[*index], explanation
+func (f FeatureFlag) EvaluateExplain(user User, store FeatureStore) (*EvalResult, error) {
+	if user.Key == nil {
+		return nil, nil
+	}
+	events := make([]FeatureRequestEvent, 0)
+	value, explanation, err := f.evaluateExplain(user, store, &events)
+
+	return &EvalResult{
+		Value:                     value,
+		Explanation:               explanation,
+		PrerequisiteRequestEvents: events,
+	}, err
+}
+
+func (f FeatureFlag) evaluateExplain(user User, store FeatureStore, events *[]FeatureRequestEvent) (interface{}, *Explanation, error) {
+	var failedPrereq *Prerequisite
+	for _, prereq := range f.Prerequisites {
+		prereqFeatureFlag, err := store.Get(prereq.Key)
+		if err != nil || prereqFeatureFlag == nil {
+			failedPrereq = &prereq
+			break
+		}
+		if prereqFeatureFlag.On {
+			prereqValue, _, err := prereqFeatureFlag.evaluateExplain(user, store, events)
+			if err != nil {
+				failedPrereq = &prereq
+			}
+
+			*events = append(*events, NewFeatureRequestEvent(prereq.Key, user, prereqValue, nil))
+			variation, verr := prereqFeatureFlag.getVariation(&prereq.Variation)
+			if prereqValue == nil || verr != nil || prereqValue != variation {
+				failedPrereq = &prereq
+			}
+		} else {
+			failedPrereq = &prereq
+		}
 	}
 
+	if failedPrereq != nil {
+		explanation := Explanation{
+			Kind:         "prerequisite",
+			Prerequisite: failedPrereq} //return the last prereq to fail
+
+		return nil, &explanation, nil
+	}
+
+	index, explanation := f.evaluateExplainIndex(user)
+	variation, verr := f.getVariation(index)
+
+	if verr != nil {
+		return nil, explanation, verr
+	}
+	return variation, explanation, nil
+}
+
+func (f FeatureFlag) getVariation(index *int) (interface{}, error) {
+	if index == nil {
+		return nil, nil
+	}
+	if index == nil || *index >= len(f.Variations) {
+		return nil, errors.New("Invalid variation index")
+	} else {
+		return f.Variations[*index], nil
+	}
 }
 
 func (f FeatureFlag) evaluateExplainIndex(user User) (*int, *Explanation) {
-	// TODO: The toggle algorithm should check the kill switch. We won't check it here
-	// so we can potentially compute an explanation even if the kill switch is hit
-	if user.Key == nil {
-		return f.OffVariation, nil
-	}
-
 	// Check to see if targets match
 	for _, target := range f.Targets {
 		for _, value := range target.Values {
@@ -117,7 +189,7 @@ func (f FeatureFlag) evaluateExplainIndex(user User) (*int, *Explanation) {
 			variation := rule.variationIndexForUser(user, f.Key, f.Salt)
 
 			if variation == nil {
-				return f.OffVariation, nil // TODO should this continue, or return the off variation?
+				return nil, nil
 			} else {
 				explanation := Explanation{Kind: "rule", Rule: &rule}
 				return variation, &explanation
@@ -125,13 +197,12 @@ func (f FeatureFlag) evaluateExplainIndex(user User) (*int, *Explanation) {
 		}
 	}
 
-	// Walk through the fallthrough and see if it matches
 	variation := f.Fallthrough.variationIndexForUser(user, f.Key, f.Salt)
 
 	if variation == nil {
-		return f.OffVariation, nil
+		return nil, nil
 	} else {
-		explanation := Explanation{Kind: "fallthrough", Rule: &f.Fallthrough}
+		explanation := Explanation{Kind: "fallthrough", VariationOrRollout: &f.Fallthrough}
 		return variation, &explanation
 	}
 }
@@ -187,7 +258,7 @@ func matchAny(fn opFn, value interface{}, values []interface{}) bool {
 	return false
 }
 
-func (r Rule) variationIndexForUser(user User, key, salt string) *int {
+func (r VariationOrRollout) variationIndexForUser(user User, key, salt string) *int {
 	if r.Variation != nil {
 		return r.Variation
 	} else if r.Rollout != nil {
@@ -205,8 +276,6 @@ func (r Rule) variationIndexForUser(user User, key, salt string) *int {
 				return &wv.Variation
 			}
 		}
-
 	}
-
 	return nil
 }

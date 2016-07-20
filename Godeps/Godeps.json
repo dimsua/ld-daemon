@@ -1,6 +1,7 @@
 {
 	"ImportPath": "github.com/launchdarkly/ld-daemon",
 	"GoVersion": "go1.5.1",
+	"GodepVersion": "v74",
 	"Deps": [
 		{
 			"ImportPath": "github.com/facebookgo/httpcontrol",
@@ -24,7 +25,11 @@
 		},
 		{
 			"ImportPath": "github.com/launchdarkly/go-client",
-			"Rev": "9c6dda921e8ccff68303be9fa4b29375bb060070"
+			"Rev": "87ccaca573a174baca61918550033621a8668759"
+		},
+		{
+			"ImportPath": "github.com/launchdarkly/go-client/redis",
+			"Rev": "87ccaca573a174baca61918550033621a8668759"
 		},
 		{
 			"ImportPath": "github.com/patrickmn/go-cache",
@@ -32,7 +37,19 @@
 		},
 		{
 			"ImportPath": "gopkg.in/gcfg.v1",
-			"Rev": "a3bc0742e3bbfd16123e6cee742cadec9a3301d2"
+			"Rev": "083575c3955c85df16fe9590cceab64d03f5eb6e"
+		},
+		{
+			"ImportPath": "gopkg.in/gcfg.v1/scanner",
+			"Rev": "083575c3955c85df16fe9590cceab64d03f5eb6e"
+		},
+		{
+			"ImportPath": "gopkg.in/gcfg.v1/token",
+			"Rev": "083575c3955c85df16fe9590cceab64d03f5eb6e"
+		},
+		{
+			"ImportPath": "gopkg.in/gcfg.v1/types",
+			"Rev": "083575c3955c85df16fe9590cceab64d03f5eb6e"
 		}
 	]
 }

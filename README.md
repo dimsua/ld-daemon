@@ -13,7 +13,7 @@ The daemon can be configured to synchronize multiple environments, even across m
 Quick setup
 -----------
 
-1. Copy `ld-daemon.conf` to `/etc/ld-daemon.conf`, and edit to specify your Redis host and port, as well as Redis key prefixes and LaunchDarkly API keys for each environment you wish to synchronize.
+1. Copy `deb-contents/etc/ld-daemon.conf` to `/etc/ld-daemon.conf`, and edit to specify your Redis host and port, as well as Redis key prefixes and LaunchDarkly API keys for each environment you wish to synchronize.
 
 2. If building from source, have `go` 1.4+ and `godep` installed, and run `godep go build`.
 
