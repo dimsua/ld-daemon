@@ -1,6 +1,12 @@
 LaunchDarkly Redis daemon
 =========================
 
+Deprecated
+----------
+
+The LaunchDarkly Daemon has been replaced by the [LaunchDarkly Relay Proxy](https://github.com/launchdarkly/ld-relay). We've kept this repository here for anyone continuing to use the old Daemon, but the Relay Proxy does everything that the Daemon did, and more.
+
+
 What is it?
 -----------
 
